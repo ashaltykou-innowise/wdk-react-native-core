@@ -39,6 +39,9 @@ describe('AddressService', () => {
   beforeEach(() => {
     jest.clearAllMocks()
 
+    // Clear static inflight map / bump global epoch so tests don't leak state
+    AddressService.invalidateAll()
+
     // Setup mock HRPC
     mockHRPC = {
       callMethod: jest.fn(),
@@ -322,6 +325,81 @@ describe('AddressService', () => {
 
       expect(loadingWasSetToTrue).toBe(true)
       expect(loadingWasSetToFalse).toBe(true)
+    })
+
+    it('should dedupe concurrent calls for the same key', async () => {
+      const address = '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0'
+      mockHRPC.callMethod.mockResolvedValue({
+        result: JSON.stringify(address),
+      })
+
+      const p1 = AddressService.getAddress('ethereum', 0)
+      const p2 = AddressService.getAddress('ethereum', 0)
+      const results = await Promise.all([p1, p2])
+
+      expect(mockHRPC.callMethod).toHaveBeenCalledTimes(1)
+      expect(results).toEqual([address, address])
+    })
+
+    it('should not dedupe different keys', async () => {
+      mockHRPC.callMethod.mockResolvedValue({
+        result: JSON.stringify('0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0'),
+      })
+
+      await Promise.all([
+        AddressService.getAddress('ethereum', 0),
+        AddressService.getAddress('ethereum', 1),
+        AddressService.getAddress('polygon', 0),
+      ])
+
+      expect(mockHRPC.callMethod).toHaveBeenCalledTimes(3)
+    })
+
+    it('should skip store writes after invalidateWallet', async () => {
+      const address = '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0'
+      mockHRPC.callMethod.mockResolvedValue({
+        result: JSON.stringify(address),
+      })
+
+      const pending = AddressService.getAddress('ethereum', 0, 'test-wallet-1')
+      AddressService.invalidateWallet('test-wallet-1')
+      const result = await pending
+
+      expect(result).toBe(address)
+      expect(mockWalletStore.setState).not.toHaveBeenCalled()
+    })
+
+    it('should skip store writes after invalidateAll', async () => {
+      const address = '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0'
+      mockHRPC.callMethod.mockResolvedValue({
+        result: JSON.stringify(address),
+      })
+
+      const pending = AddressService.getAddress('ethereum', 0, 'test-wallet-1')
+      AddressService.invalidateAll()
+      const result = await pending
+
+      expect(result).toBe(address)
+      expect(mockWalletStore.setState).not.toHaveBeenCalled()
+    })
+
+    it('should start a fresh fetch after invalidate clears inflight', async () => {
+      const staleAddress = '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0'
+      const freshAddress = '0x842d35Cc6634C0532925a3b844Bc9e7595f0bEb0'
+  
+      mockHRPC.callMethod
+        .mockResolvedValueOnce({ result: JSON.stringify(staleAddress) })
+        .mockResolvedValueOnce({ result: JSON.stringify(freshAddress) })
+
+      const stale = AddressService.getAddress('ethereum', 0, 'test-wallet-1')
+      AddressService.invalidateWallet('test-wallet-1')
+  
+      const fresh = AddressService.getAddress('ethereum', 0, 'test-wallet-1')
+      const [staleResult, freshResult] = await Promise.all([stale, fresh])
+
+      expect(mockHRPC.callMethod).toHaveBeenCalledTimes(2)
+      expect(staleResult).toBe(staleAddress)
+      expect(freshResult).toBe(freshAddress)  
     })
   })
 })

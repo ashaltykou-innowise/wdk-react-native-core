@@ -14,6 +14,7 @@
 
 import { produce } from 'immer'
 import { useMemo, useCallback } from 'react'
+import { AddressService } from '../services/addressService'
 import { WalletSetupService } from '../services/walletSetupService'
 import { WorkletLifecycleService } from '../services/workletLifecycleService'
 import {
@@ -363,6 +364,10 @@ export function useWalletManager(): UseWalletManagerResult {
       }
 
       try {
+        // Invalidate before clearing store so in-flight getAddress calls
+        // skip stale writes under this walletId.
+        AddressService.invalidateWallet(walletId)
+
         await WalletSetupService.deleteWallet(walletId)
 
         walletStore.setState((prev) =>

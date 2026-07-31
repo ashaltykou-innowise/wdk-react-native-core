@@ -21,6 +21,7 @@
 
 import { Worklet } from 'react-native-bare-kit'
 
+import { AddressService } from './addressService'
 import { getWalletStore } from '../store/walletStore'
 import { getWorkletStore } from '../store/workletStore'
 import { DEFAULT_MNEMONIC_WORD_COUNT } from '../utils/constants'
@@ -531,6 +532,9 @@ export class WorkletLifecycleService {
     })
 
     workletStore.setState({ isWorkletInitializedPromise: createResolvablePromise<boolean>() })
+
+    // Drop in-flight address fetches so late responses cannot repopulate the store
+    AddressService.invalidateAll()
 
     // Clear addresses from wallet store
     walletStore.setState({

@@ -39,6 +39,71 @@ import { AddressInfoResult } from '../types'
  */
 export class AddressService {
   /**
+   * Dedupes concurrent getAddress calls: walletId:network:accountIndex -> Promise
+   */
+  private static inflight = new Map<string, Promise<string>>()
+
+  /**
+   * Per-wallet epoch; bumped on invalidate so in-flight writes are skipped
+   */
+  private static walletEpochs = new Map<string, number>()
+
+  /**
+   * Global epoch; bumped on invalidateAll (e.g. lock/reset)
+   */
+  private static globalEpoch = 0
+
+  /**
+   * Generate a cache key for a specific wallet, network, and account index
+   */
+  private static cacheKey(
+    walletId: string,
+    network: string,
+    accountIndex: number,
+  ): string {
+    return `${walletId}:${network}:${accountIndex}`
+  }
+
+  /**
+   * Get the epoch for a specific wallet
+   */
+  private static getEpoch(walletId: string): number {
+    return this.globalEpoch + (this.walletEpochs.get(walletId) ?? 0)
+  }
+
+  /**
+   * Clear the inflight map for a specific wallet
+   */
+  private static clearInflightForWallet(walletId: string): void {
+    const prefix = `${walletId}:`
+    for (const key of [...this.inflight.keys()]) {
+      if (key.startsWith(prefix)) {
+        this.inflight.delete(key)
+      }
+    }
+  }
+
+  /**
+   * Invalidate in-flight address fetches for a wallet.
+   * Clears the promise cache for that wallet and bumps its epoch so any
+   * still-running fetch will not write to the store when it completes.
+   */
+  static invalidateWallet(walletId: string): void {
+    this.clearInflightForWallet(walletId)
+    this.walletEpochs.set(walletId, (this.walletEpochs.get(walletId) ?? 0) + 1)
+    log('[AddressService] Invalidated wallet address fetches', { walletId })
+  }
+
+  /**
+   * Invalidate all in-flight address fetches (e.g. on lock/reset).
+   */
+  static invalidateAll(): void {
+    this.inflight.clear()
+    this.globalEpoch += 1
+    log('[AddressService] Invalidated all address fetches')
+  }
+
+  /**
    * Get address for a specific network and account index
    * Caches the address in walletStore for future use
    *
@@ -64,17 +129,48 @@ export class AddressService {
       return cachedAddress
     }
 
+    const cacheKey = this.cacheKey(targetWalletId, network, accountIndex)
+    const existing = this.inflight.get(cacheKey)
+    if (existing) {
+      return existing
+    }
+
+    const promise = this.fetchAndCacheAddress(
+      network,
+      accountIndex,
+      targetWalletId,
+    )
+    this.inflight.set(cacheKey, promise)
+
+    try {
+      return await promise
+    } finally {
+      if (this.inflight.get(cacheKey) === promise) {
+        this.inflight.delete(cacheKey)
+      }
+    }
+  }
+
+  private static async fetchAndCacheAddress(
+    network: string,
+    accountIndex: number,
+    targetWalletId: string,
+  ): Promise<string> {
+    const walletStore = getWalletStore()
+    const epoch = this.getEpoch(targetWalletId)
     const hrpc = await requireInitialized()
 
     const loadingKey = `${network}-${accountIndex}`
 
     try {
-      walletStore.setState((prev) =>
-        produce(prev, (state) => {
-          state.walletLoading[targetWalletId] ??= {}
-          state.walletLoading[targetWalletId][loadingKey] = true
-        }),
-      )
+      if (this.getEpoch(targetWalletId) === epoch) {
+        walletStore.setState((prev) =>
+          produce(prev, (state) => {
+            state.walletLoading[targetWalletId] ??= {}
+            state.walletLoading[targetWalletId][loadingKey] = true
+          }),
+        )
+      }
 
       const response = await hrpc.callMethod({
         methodName: 'getAddress',
@@ -101,6 +197,15 @@ export class AddressService {
         )
       }
 
+      // Skip store writes if wallet was invalidated while this fetch was in flight
+      if (this.getEpoch(targetWalletId) !== epoch) {
+        log(
+          '[AddressService] Skipping stale address write after invalidation',
+          { walletId: targetWalletId, network, accountIndex },
+        )
+        return address
+      }
+
       // Cache the address using helper (per-wallet)
       walletStore.setState((prev) =>
         produce(
@@ -120,12 +225,14 @@ export class AddressService {
 
       return address
     } catch (error) {
-      walletStore.setState((prev) =>
-        produce(prev, (state) => {
-          state.walletLoading[targetWalletId] ??= {}
-          state.walletLoading[targetWalletId][loadingKey] = false
-        }),
-      )
+      if (this.getEpoch(targetWalletId) === epoch) {
+        walletStore.setState((prev) =>
+          produce(prev, (state) => {
+            state.walletLoading[targetWalletId] ??= {}
+            state.walletLoading[targetWalletId][loadingKey] = false
+          }),
+        )
+      }
 
       handleServiceError(error, 'AddressService', 'getAddress', {
         network,

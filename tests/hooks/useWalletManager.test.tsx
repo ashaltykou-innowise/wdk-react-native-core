@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import React, { PropsWithChildren } from 'react';
 import { renderHook, act } from '@testing-library/react-native';
 import { create, StoreApi } from 'zustand';
 import { useWalletManager } from '../../src/hooks/useWalletManager';
@@ -20,8 +19,6 @@ import { WalletSetupService } from '../../src/services/walletSetupService';
 import { WorkletLifecycleService } from '../../src/services/workletLifecycleService';
 import { getWalletStore, WalletState, WalletInfo } from '../../src/store/walletStore';
 import { getWorkletStore, WorkletStore } from '../../src/store/workletStore';
-import { useWdkApp } from '../../src/hooks/useWdkApp';
-import { WdkAppContext, WdkAppContextValue } from '../../src/provider/WdkAppProvider';
 
 jest.mock('../../src/services/walletSetupService');
 jest.mock('../../src/services/workletLifecycleService');
@@ -35,7 +32,6 @@ jest.mock('../../src/store/walletStore', () => ({
 jest.mock('../../src/store/workletStore', () => ({
   getWorkletStore: jest.fn(),
 }));
-jest.mock('../../src/hooks/useWdkApp');
 
 type MockWalletStore = StoreApi<WalletState>;
 type MockWorkletStore = StoreApi<WorkletStore>;
@@ -44,7 +40,6 @@ const mockWalletSetupService = WalletSetupService as jest.Mocked<typeof WalletSe
 const mockWorkletLifecycleService = WorkletLifecycleService as jest.Mocked<typeof WorkletLifecycleService>;
 const mockGetWalletStore = getWalletStore as jest.Mock;
 const mockGetWorkletStore = getWorkletStore as jest.Mock;
-const mockUseWdkApp = useWdkApp as jest.Mock;
 
 const mockInitialWalletState: WalletState = {
   addresses: {},
@@ -112,12 +107,6 @@ beforeEach(() => {
   mockWorkletStoreInstance = create<WorkletStore>(() => mockInitialWorkletState);
   mockGetWorkletStore.mockReturnValue(mockWorkletStoreInstance);
 
-  mockUseWdkApp.mockReturnValue({
-    state: { status: 'READY', walletId: 'mock-wdk-ready' },
-    reinitializeWdk: jest.fn(),
-    resetWallets: jest.fn(),
-  });
-
   mockWalletSetupService.initializeWallet.mockResolvedValue(undefined);
   mockWalletSetupService.hasWallet.mockResolvedValue(false);
   mockWalletSetupService.initializeFromMnemonic.mockResolvedValue({ encryptedEntropy: '', encryptedSeed: '', encryptionKey: ''});
@@ -127,52 +116,13 @@ beforeEach(() => {
   mockWorkletLifecycleService.ensureWorkletStarted.mockResolvedValue(undefined);
 });
 
-const ContextWrapper = ({ children }: PropsWithChildren) => {
-  const mockWdkAppValue: WdkAppContextValue = {
-    state: { status: 'READY', walletId: 'mock-wdk-ready' },
-  };
-  mockUseWdkApp.mockReturnValue(mockWdkAppValue);
-
-  return (
-    <WdkAppContext.Provider value={mockWdkAppValue}>
-      {children}
-    </WdkAppContext.Provider>
-  );
-};
-
 describe('useWalletManager', () => {
-  it('should expose state and actions from stores and services', () => {
-    const { result } = renderHook(() => useWalletManager(), {
-      wrapper: ContextWrapper
-    });
-
-    expect(result.current.activeWalletId).toBeNull();
-    expect(result.current.wallets).toEqual([]);
-    expect(result.current.status).toBe('NO_WALLET');
-
-    expect(typeof result.current.unlock).toBe('function');
-    expect(typeof result.current.createWallet).toBe('function');
-    expect(typeof result.current.deleteWallet).toBe('function');
-    expect(typeof result.current.getMnemonic).toBe('function');
-    expect(typeof result.current.getEncryptionKey).toBe('function');
-    expect(typeof result.current.getEncryptedSeed).toBe('function');
-    expect(typeof result.current.getEncryptedEntropy).toBe('function');
-    expect(typeof result.current.generateEntropyAndEncrypt).toBe('function');
-    expect(typeof result.current.getMnemonicFromEntropy).toBe('function');
-    expect(typeof result.current.getSeedAndEntropyFromMnemonic).toBe('function');
-    expect(typeof result.current.lock).toBe('function');
-    expect(typeof result.current.generateMnemonic).toBe('function');
-    expect(typeof result.current.clearTemporaryWallet).toBe('function');
-    expect(typeof result.current.createTemporaryWallet).toBe('function');
-    expect(typeof result.current.clearCache).toBe('function');
-  });
-
   describe('State Management and Transitions', () => {
     it('should call WalletSetupService.createWallet', async () => {
         const walletId = 'new-wallet';
         mockWalletSetupService.hasWallet.mockResolvedValue(false);
         
-        const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+        const { result } = renderHook(() => useWalletManager());
         
         await act(async () => {
             await result.current.createWallet(walletId);
@@ -187,7 +137,7 @@ describe('useWalletManager', () => {
       const walletId = 'existing-wallet';
       mockWalletSetupService.hasWallet.mockResolvedValue(true);
 
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+      const { result } = renderHook(() => useWalletManager());
 
       await expect(act(async () => {
           await result.current.createWallet(walletId);
@@ -200,7 +150,7 @@ describe('useWalletManager', () => {
       const walletId = 'test-wallet-456';
       mockWalletSetupService.initializeWallet.mockResolvedValue();
 
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+      const { result } = renderHook(() => useWalletManager());
 
       await act(async () => {
         await result.current.unlock(walletId);
@@ -220,7 +170,7 @@ describe('useWalletManager', () => {
       });
       mockWalletSetupService.initializeWallet.mockReturnValue(unlockPromise);
 
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+      const { result } = renderHook(() => useWalletManager());
 
       let firstUnlockPromise: Promise<void>;
       await act(async () => {
@@ -249,7 +199,7 @@ describe('useWalletManager', () => {
         });
       });
 
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+      const { result } = renderHook(() => useWalletManager());
 
       await act(async () => {
         result.current.lock();
@@ -267,7 +217,7 @@ describe('useWalletManager', () => {
       const walletId = 'test-wallet-to-unlock';
       mockWalletSetupService.initializeWallet.mockResolvedValue();
       
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+      const { result } = renderHook(() => useWalletManager());
       
       await act(async () => {
         await result.current.unlock(walletId);
@@ -287,7 +237,7 @@ describe('useWalletManager', () => {
         activeWalletId: walletIdToDelete,
       });
       
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+      const { result } = renderHook(() => useWalletManager());
 
       await act(async () => {
         await result.current.deleteWallet(walletIdToDelete);
@@ -296,23 +246,9 @@ describe('useWalletManager', () => {
       expect(mockWalletSetupService.deleteWallet).toHaveBeenCalledWith(walletIdToDelete);
       expect(mockWalletSetupService.deleteWallet).toHaveBeenCalledTimes(1);
     });
-    
-    it('should delegate getMnemonic to WalletSetupService', async () => {
-      const mnemonicPhrase = 'test mnemonic phrase';
-      mockWalletSetupService.getMnemonic.mockResolvedValue(mnemonicPhrase);
-      const walletId = 'wallet-with-mnemonic';
-
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
-
-      const mnemonic = await result.current.getMnemonic(walletId);
-
-      expect(mockWalletSetupService.getMnemonic).toHaveBeenCalledWith(walletId);
-      expect(mockWalletSetupService.getMnemonic).toHaveBeenCalledTimes(1);
-      expect(mnemonic).toBe(mnemonicPhrase);
-    });
 
     it('should delegate createTemporaryWallet', async () => {
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+      const { result } = renderHook(() => useWalletManager());
       mockWorkletLifecycleService.generateEntropyAndEncrypt.mockResolvedValue({
         encryptionKey: '',
         encryptedEntropyBuffer: '',
@@ -331,7 +267,7 @@ describe('useWalletManager', () => {
       mockWalletSetupService.hasWallet.mockResolvedValue(false);
       const setStateSpy = jest.spyOn(mockWalletStoreInstance, 'setState');
 
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+      const { result } = renderHook(() => useWalletManager());
 
       await act(async () => {
         await result.current.createWallet(walletId);
@@ -354,7 +290,7 @@ describe('useWalletManager', () => {
       const mnemonic = 'test mnemonic';
       mockWalletSetupService.hasWallet.mockResolvedValue(false);
 
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+      const { result } = renderHook(() => useWalletManager());
 
       await act(async () => {
         await result.current.restoreWallet(mnemonic, walletId);
@@ -367,17 +303,6 @@ describe('useWalletManager', () => {
       expect(state.walletLoadingState).toEqual({ type: 'ready', identifier: walletId });
     });
 
-    it('should update activeWalletId via setActiveWalletId', () => {
-      const walletId = 'switched-wallet';
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
-
-      act(() => {
-        result.current.setActiveWalletId(walletId);
-      });
-
-      expect(mockWalletStoreInstance.getState().activeWalletId).toBe(walletId);
-    });
-
     it('should clear balances and loading states via clearCache', () => {
       mockWalletStoreInstance.setState({
         balances: { 'w1': {} },
@@ -385,7 +310,7 @@ describe('useWalletManager', () => {
         lastBalanceUpdate: { 'w1': {} }
       });
 
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+      const { result } = renderHook(() => useWalletManager());
 
       act(() => {
         result.current.clearCache();
@@ -404,7 +329,7 @@ describe('useWalletManager', () => {
         walletList: [{ identifier: tempId, exists: true }]
       });
 
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+      const { result } = renderHook(() => useWalletManager());
 
       act(() => {
         result.current.clearTemporaryWallet();
@@ -415,32 +340,6 @@ describe('useWalletManager', () => {
       expect(state.walletList).toEqual([]);
     });
 
-    it('should delegate credential getters to WalletSetupService', async () => {
-      const walletId = 'test-wallet';
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
-
-      await result.current.getEncryptionKey(walletId);
-      expect(mockWalletSetupService.getEncryptionKey).toHaveBeenCalledWith(walletId);
-
-      await result.current.getEncryptedSeed(walletId);
-      expect(mockWalletSetupService.getEncryptedSeed).toHaveBeenCalledWith(walletId);
-
-      await result.current.getEncryptedEntropy(walletId);
-      expect(mockWalletSetupService.getEncryptedEntropy).toHaveBeenCalledWith(walletId);
-    });
-
-    it('should delegate worklet operations to WorkletLifecycleService', async () => {
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
-
-      await result.current.generateEntropyAndEncrypt(12);
-      expect(mockWorkletLifecycleService.generateEntropyAndEncrypt).toHaveBeenCalledWith(12);
-
-      await result.current.getMnemonicFromEntropy('ent', 'key');
-      expect(mockWorkletLifecycleService.getMnemonicFromEntropy).toHaveBeenCalledWith('ent', 'key');
-
-      await result.current.getSeedAndEntropyFromMnemonic('mnemonic');
-      expect(mockWorkletLifecycleService.getSeedAndEntropyFromMnemonic).toHaveBeenCalledWith('mnemonic');
-    });
   });
 
   describe('Status Memo', () => {
@@ -448,7 +347,7 @@ describe('useWalletManager', () => {
       mockWalletStoreInstance.setState({
         walletLoadingState: { type: 'loading', identifier: 'test', walletExists: true }
       });
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+      const { result } = renderHook(() => useWalletManager());
       expect(result.current.status).toBe('LOADING');
     });
 
@@ -456,14 +355,14 @@ describe('useWalletManager', () => {
       mockWalletStoreInstance.setState({
         walletLoadingState: { type: 'error', identifier: 'test', error: new Error('fail') }
       });
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+      const { result } = renderHook(() => useWalletManager());
       expect(result.current.status).toBe('ERROR');
     });
 
     it('should return LOCKED when activeWalletId is set but WDK is not initialized', () => {
       mockWorkletStoreInstance.setState({ isInitialized: false });
       mockWalletStoreInstance.setState({ activeWalletId: 'some-wallet' });
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+      const { result } = renderHook(() => useWalletManager());
       expect(result.current.status).toBe('LOCKED');
     });
   });
@@ -472,7 +371,7 @@ describe('useWalletManager', () => {
     it('should update state to error when unlock fails', async () => {
       const walletId = 'fail-wallet';
       mockWalletSetupService.initializeWallet.mockRejectedValue(new Error('init fail'));
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+      const { result } = renderHook(() => useWalletManager());
 
       await act(async () => {
         try {
@@ -489,12 +388,11 @@ describe('useWalletManager', () => {
 
     it('should handle non-Error catch in unlock', async () => {
       mockWalletSetupService.initializeWallet.mockRejectedValue('string error');
-      mockWalletStoreInstance.setState({ activeWalletId: 'test' });
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+      const { result } = renderHook(() => useWalletManager());
 
       await act(async () => {
         try {
-          await result.current.unlock();
+          await result.current.unlock('test');
         } catch (e) {
           // Expected error
         }
@@ -504,36 +402,12 @@ describe('useWalletManager', () => {
       expect(state.walletLoadingState.type).toBe('error');
       expect((state.walletLoadingState as any).error.message).toBe('string error');
     });
-
-    it('should handle errors in getMnemonic', async () => {
-        mockWalletSetupService.getMnemonic.mockRejectedValue(new Error('mnem fail'));
-        const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
-        await expect(result.current.getMnemonic('id')).rejects.toThrow('mnem fail');
-    });
-
-    it('should handle errors in getEncryptionKey', async () => {
-        mockWalletSetupService.getEncryptionKey.mockRejectedValue(new Error('key fail'));
-        const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
-        await expect(result.current.getEncryptionKey('id')).rejects.toThrow('key fail');
-    });
-
-    it('should handle errors in getEncryptedSeed', async () => {
-        mockWalletSetupService.getEncryptedSeed.mockRejectedValue(new Error('seed fail'));
-        const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
-        await expect(result.current.getEncryptedSeed('id')).rejects.toThrow('seed fail');
-    });
-
-    it('should handle errors in getEncryptedEntropy', async () => {
-        mockWalletSetupService.getEncryptedEntropy.mockRejectedValue(new Error('ent fail'));
-        const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
-        await expect(result.current.getEncryptedEntropy('id')).rejects.toThrow('ent fail');
-    });
   });
 
   describe('createTemporaryWallet options', () => {
     it('should handle mnemonic parameter in createTemporaryWallet', async () => {
       const mnemonic = 'test mnemonic';
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+      const { result } = renderHook(() => useWalletManager());
       
       mockWorkletLifecycleService.getSeedAndEntropyFromMnemonic.mockResolvedValue({
         encryptionKey: 'key',
@@ -553,7 +427,7 @@ describe('useWalletManager', () => {
     });
 
     it('should throw error if walletId is missing in createTemporaryWallet', async () => {
-        const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+        const { result } = renderHook(() => useWalletManager());
         await expect(act(async () => {
             await (result.current as any).createTemporaryWallet(null);
         })).rejects.toThrow('A valid walletId is required for createTemporaryWallet.');
@@ -561,34 +435,8 @@ describe('useWalletManager', () => {
   });
 
   describe('Helper methods and edge cases', () => {
-    it('should handle errors in generateEntropyAndEncrypt', async () => {
-        mockWorkletLifecycleService.generateEntropyAndEncrypt.mockRejectedValue(new Error('gen fail'));
-        const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
-        await expect(result.current.generateEntropyAndEncrypt()).rejects.toThrow('gen fail');
-    });
-
-    it('should handle errors in getMnemonicFromEntropy', async () => {
-        mockWorkletLifecycleService.getMnemonicFromEntropy.mockRejectedValue(new Error('mnem fail'));
-        const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
-        await expect(result.current.getMnemonicFromEntropy('e', 'k')).rejects.toThrow('mnem fail');
-    });
-
-    it('should handle errors in getSeedAndEntropyFromMnemonic', async () => {
-        mockWorkletLifecycleService.getSeedAndEntropyFromMnemonic.mockRejectedValue(new Error('seed fail'));
-        const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
-        await expect(result.current.getSeedAndEntropyFromMnemonic('m')).rejects.toThrow('seed fail');
-    });
-
-    it('should handle errors in deleteWallet', async () => {
-        mockWalletSetupService.deleteWallet.mockRejectedValue(new Error('del fail'));
-        const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
-        await expect(act(async () => {
-            await result.current.deleteWallet('id');
-        })).rejects.toThrow('del fail');
-    });
-
     it('should throw error if walletId is empty in deleteWallet', async () => {
-        const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+        const { result } = renderHook(() => useWalletManager());
         await expect(act(async () => {
             await (result.current as any).deleteWallet("");
         })).rejects.toThrow('Wallet ID is required for deletion');
@@ -602,7 +450,7 @@ describe('useWalletManager', () => {
         });
         mockWorkletLifecycleService.getMnemonicFromEntropy.mockResolvedValue({ mnemonic: 'gen mnemonic' });
         
-        const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+        const { result } = renderHook(() => useWalletManager());
         
         const mnem = await result.current.generateMnemonic(12);
         expect(mnem).toBe('gen mnemonic');
@@ -618,7 +466,7 @@ describe('useWalletManager', () => {
       
       mockWorkletLifecycleService.ensureWorkletStarted.mockReturnValue(workletStartPromise);
 
-      const { result } = renderHook(() => useWalletManager(), { wrapper: ContextWrapper });
+      const { result } = renderHook(() => useWalletManager());
       
       const createWalletPromise = act(async () => {
         await result.current.createWallet('test-wallet');

@@ -37,9 +37,6 @@ export interface UseWalletManagerResult {
   /** The current state of the active wallet. */
   status: 'LOCKED' | 'UNLOCKED' | 'NO_WALLET' | 'LOADING' | 'ERROR'
 
-  /** Set the global active wallet (loads the seed). */
-  setActiveWalletId: (walletId: string) => void
-
   /** List of backing Wallets (Seeds) managed by the device. */
   wallets: WalletInfo[]
 
@@ -62,11 +59,19 @@ export interface UseWalletManagerResult {
   lock: () => void
 
   /**
-   * Unlocks the currently active wallet.
+   * Unlocks a wallet.
    * This typically triggers a biometric prompt to decrypt and load the wallet.
-   * @param walletId - Optional walletId to switch to before unlocking
+   * @param walletId - The wallet to unlock. Callers own identity - there is no implicit fallback.
    */
-  unlock: (walletId?: string) => Promise<void>
+  unlock: (walletId: string) => Promise<void>
+
+  /**
+   * Switches to a different wallet.
+   * Equivalent to calling lock() followed by unlock(walletId), performed as a single
+   * atomic operation so the previous wallet's data is always cleared before the new
+   * one is loaded.
+   */
+  switchWallet: (walletId: string) => Promise<void>
 
   /** Clear the wallet cache. */
   clearCache: () => void
@@ -158,14 +163,9 @@ export function useWalletManager(): UseWalletManagerResult {
       return 'LOCKED'
     }, [activeWalletId, walletLoadingState.type, isWdkInitialized])
 
-  const setActiveWalletId = useCallback((walletId: string) => {
-    const walletStore = getWalletStore()
-    walletStore.setState({ activeWalletId: walletId })
-  }, [])
-
   /**
-   * Clear active wallet ID
-   * Useful when switching users or logging out to prevent auto-initialization with wrong wallet
+   * Signs out of the active wallet: clears activeWalletId, resets the worklet, and
+   * drops back to not_loaded. Callers are responsible for tracking which wallet to target on the next unlock.
    */
   const lock = useCallback(() => {
     if (walletStore.getState().activeWalletId) {
@@ -201,62 +201,67 @@ export function useWalletManager(): UseWalletManagerResult {
     log('[useWalletManager] Cleared temporary wallet session')
   }, [lock, walletStore])
 
-  const unlock = useCallback(
-    (walletId?: string) =>
-      withOperationMutex('unlock', async () => {
-        if (walletStore.getState().walletLoadingState.type === 'ready') {
-          log('[useWalletManager] Skipping unlock, wallet is already ready.')
-          return
-        }
+  const performUnlock = useCallback(
+    async (walletId: string) => {
+      if (walletStore.getState().walletLoadingState.type === 'ready') {
+        log('[useWalletManager] Skipping unlock: a wallet is already ready.', {
+          requestedWalletId: walletId,
+        })
+        return
+      }
 
-        await WorkletLifecycleService.ensureWorkletStarted()
+      await WorkletLifecycleService.ensureWorkletStarted()
 
-        if (walletId) {
-          clearTemporaryWallet()
-          walletStore.setState({ activeWalletId: walletId })
-        }
+      clearTemporaryWallet()
+      walletStore.setState({ activeWalletId: walletId })
 
-        const targetWalletId = walletStore.getState().activeWalletId
+      try {
+        walletStore.setState((prev) =>
+          updateWalletLoadingState(prev, {
+            type: 'loading',
+            identifier: walletId,
+            walletExists: true,
+          }),
+        )
 
-        if (!targetWalletId) {
-          log('[useWalletManager] No wallet is selected', { targetWalletId })
+        await WalletSetupService.initializeWallet({
+          walletId,
+        })
 
-          return
-        }
-
-        try {
-          walletStore.setState((prev) =>
-            updateWalletLoadingState(prev, {
-              type: 'loading',
-              identifier: targetWalletId,
-              walletExists: true,
-            }),
-          )
-
-          await WalletSetupService.initializeWallet({
-            walletId: targetWalletId,
-          })
-
-          walletStore.setState((prev) =>
-            updateWalletLoadingState(prev, {
-              type: 'ready',
-              identifier: targetWalletId,
-            }),
-          )
-        } catch (err) {
-          logError('Failed to unlock wallet:', err)
-          const errorMessage = err instanceof Error ? err.message : String(err)
-          walletStore.setState((prev) =>
-            updateWalletLoadingState(prev, {
-              type: 'error',
-              identifier: targetWalletId,
-              error: new Error(errorMessage),
-            }),
-          )
-          throw err
-        }
-      }),
+        walletStore.setState((prev) =>
+          updateWalletLoadingState(prev, {
+            type: 'ready',
+            identifier: walletId,
+          }),
+        )
+      } catch (err) {
+        logError('Failed to unlock wallet:', err)
+        const errorMessage = err instanceof Error ? err.message : String(err)
+        walletStore.setState((prev) =>
+          updateWalletLoadingState(prev, {
+            type: 'error',
+            identifier: walletId,
+            error: new Error(errorMessage),
+          }),
+        )
+        throw err
+      }
+    },
     [walletStore, clearTemporaryWallet],
+  )
+
+  const unlock = useCallback(
+    (walletId: string) => withOperationMutex('unlock', () => performUnlock(walletId)),
+    [performUnlock],
+  )
+
+  const switchWallet = useCallback(
+    (walletId: string) =>
+      withOperationMutex('switchWallet', async () => {
+        lock()
+        await performUnlock(walletId)
+      }),
+    [lock, performUnlock],
   )
 
   const checkWallet = useCallback(
@@ -632,7 +637,6 @@ export function useWalletManager(): UseWalletManagerResult {
               identifier: walletId,
               exists: true,
             })
-            // Set as active wallet so WdkAppProvider can auto-initialize on restart
             state.activeWalletId = walletId
           }),
         )
@@ -679,7 +683,7 @@ export function useWalletManager(): UseWalletManagerResult {
       // Session Management
       unlock,
       lock,
-      setActiveWalletId,
+      switchWallet,
       clearCache,
 
       // Wallet Management
@@ -700,7 +704,7 @@ export function useWalletManager(): UseWalletManagerResult {
     [
       unlock,
       lock,
-      setActiveWalletId,
+      switchWallet,
       clearCache,
       createWallet,
       createTemporaryWallet,

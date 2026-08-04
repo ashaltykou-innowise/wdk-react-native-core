@@ -170,7 +170,6 @@ export function createWalletStore(): WalletStoreInstance {
             lastBalanceUpdate: state.lastBalanceUpdate,
             accountList: state.accountList,
             walletList: state.walletList,
-            activeWalletId: state.activeWalletId,
             // Don't persist loading state or operation mutex - these are runtime-only
           }),
           onRehydrateStorage: () => {

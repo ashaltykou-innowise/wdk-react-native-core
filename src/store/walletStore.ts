@@ -182,6 +182,7 @@ export function createWalletStore(): WalletStoreInstance {
                 state.walletLoadingState = { type: 'not_loaded' }
                 state.isOperationInProgress = false
                 state.currentOperation = null
+                state.activeWalletId = null
               }
             }
           },

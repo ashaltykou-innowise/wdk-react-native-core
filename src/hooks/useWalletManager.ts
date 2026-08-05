@@ -55,8 +55,10 @@ export interface UseWalletManagerResult {
   /**
    * Locks the wallet.
    * This clears all sensitive data from memory and stops the worklet.
+   * Shares the same operation mutex as unlock/switchWallet/createWallet/restoreWallet,
+   * so it rejects rather than silently racing if one of those is already in flight.
    */
-  lock: () => void
+  lock: () => Promise<void>
 
   /**
    * Unlocks a wallet.
@@ -167,7 +169,7 @@ export function useWalletManager(): UseWalletManagerResult {
    * Signs out of the active wallet: clears activeWalletId, resets the worklet, and
    * drops back to not_loaded. Callers are responsible for tracking which wallet to target on the next unlock.
    */
-  const lock = useCallback(() => {
+  const performLock = useCallback(() => {
     if (walletStore.getState().activeWalletId) {
       WorkletLifecycleService.reset()
       walletStore.setState({
@@ -178,6 +180,11 @@ export function useWalletManager(): UseWalletManagerResult {
     }
   }, [walletStore])
 
+  const lock = useCallback(
+    () => withOperationMutex('lock', async () => performLock()),
+    [performLock],
+  )
+
   const clearTemporaryWallet = useCallback(() => {
     const { tempWalletId, activeWalletId } = walletStore.getState()
 
@@ -186,7 +193,7 @@ export function useWalletManager(): UseWalletManagerResult {
     }
 
     if (activeWalletId === tempWalletId) {
-      lock()
+      performLock()
     }
 
     walletStore.setState(
@@ -199,7 +206,7 @@ export function useWalletManager(): UseWalletManagerResult {
     )
 
     log('[useWalletManager] Cleared temporary wallet session')
-  }, [lock, walletStore])
+  }, [performLock, walletStore])
 
   const performUnlock = useCallback(
     async (walletId: string) => {
@@ -258,10 +265,10 @@ export function useWalletManager(): UseWalletManagerResult {
   const switchWallet = useCallback(
     (walletId: string) =>
       withOperationMutex('switchWallet', async () => {
-        lock()
+        performLock()
         await performUnlock(walletId)
       }),
-    [lock, performUnlock],
+    [performLock, performUnlock],
   )
 
   const checkWallet = useCallback(
@@ -310,54 +317,59 @@ export function useWalletManager(): UseWalletManagerResult {
   )
 
   const restoreWallet = useCallback(
-    async (mnemonic: string, walletId: string): Promise<string> => {
-      clearTemporaryWallet()
+    (mnemonic: string, walletId: string): Promise<string> =>
+      withOperationMutex('restoreWallet', async () => {
+        if (walletStore.getState().walletLoadingState.type === 'ready') {
+          throw new Error(
+            'A wallet is already active. Call lock() before restoring a new wallet.',
+          )
+        }
 
-      const exists = await WalletSetupService.hasWallet(walletId)
+        clearTemporaryWallet()
 
-      if (exists) {
-        throw new Error(`A wallet with the ID "${walletId}" already exists.`)
-      }
+        const exists = await WalletSetupService.hasWallet(walletId)
 
-      try {
-        walletStore.setState((prev) =>
-          updateWalletLoadingState(prev, {
-            type: 'loading',
-            identifier: walletId,
-            walletExists: false,
-          }),
-        )
+        if (exists) {
+          throw new Error(`A wallet with the ID "${walletId}" already exists.`)
+        }
 
-        // Call the service to perform the actual crypto and storage
-        await WalletSetupService.initializeFromMnemonic(mnemonic, walletId)
+        try {
+          walletStore.setState((prev) =>
+            updateWalletLoadingState(prev, {
+              type: 'loading',
+              identifier: walletId,
+              walletExists: false,
+            }),
+          )
 
-        // Refresh the main wallet list so the UI updates
-        await refreshWalletList([walletId])
+          await WalletSetupService.initializeFromMnemonic(mnemonic, walletId)
 
-        walletStore.setState({ activeWalletId: walletId })
+          // Refresh the main wallet list so the UI updates
+          await refreshWalletList([walletId])
 
-        walletStore.setState((prev) =>
-          updateWalletLoadingState(prev, {
-            type: 'ready',
-            identifier: walletId,
-          }),
-        )
+          walletStore.setState({ activeWalletId: walletId })
 
-        // Return the new wallet's ID as promised by the spec
-        return walletId
-      } catch (err) {
-        logError('Failed to restore wallet:', err)
-        const errorMessage = err instanceof Error ? err.message : String(err)
-        walletStore.setState((prev) =>
-          updateWalletLoadingState(prev, {
-            type: 'error',
-            identifier: walletId,
-            error: new Error(errorMessage),
-          }),
-        )
-        throw err
-      }
-    },
+          walletStore.setState((prev) =>
+            updateWalletLoadingState(prev, {
+              type: 'ready',
+              identifier: walletId,
+            }),
+          )
+
+          return walletId
+        } catch (err) {
+          logError('Failed to restore wallet:', err)
+          const errorMessage = err instanceof Error ? err.message : String(err)
+          walletStore.setState((prev) =>
+            updateWalletLoadingState(prev, {
+              type: 'error',
+              identifier: walletId,
+              error: new Error(errorMessage),
+            }),
+          )
+          throw err
+        }
+      }),
     [refreshWalletList, walletStore, clearTemporaryWallet],
   )
 
@@ -611,57 +623,64 @@ export function useWalletManager(): UseWalletManagerResult {
    * Create a new wallet and add it to the wallet list
    */
   const createWallet = useCallback(
-    async (walletId: string) => {
-      clearTemporaryWallet()
-      await WorkletLifecycleService.ensureWorkletStarted()
-
-      try {
-        walletStore.setState((prev) =>
-          updateWalletLoadingState(prev, {
-            type: 'loading',
-            identifier: walletId,
-            walletExists: false,
-          }),
-        )
-
-        const exists = await checkWallet(walletId)
-        if (exists) {
-          throw new Error(`Wallet with walletId "${walletId}" already exists`)
+    (walletId: string) =>
+      withOperationMutex('createWallet', async () => {
+        if (walletStore.getState().walletLoadingState.type === 'ready') {
+          throw new Error(
+            'A wallet is already active. Call lock() before creating a new wallet.',
+          )
         }
 
-        await WalletSetupService.createNewWallet(walletId)
+        clearTemporaryWallet()
+        await WorkletLifecycleService.ensureWorkletStarted()
 
-        walletStore.setState((prev) =>
-          produce(prev, (state) => {
-            state.walletList.push({
+        try {
+          walletStore.setState((prev) =>
+            updateWalletLoadingState(prev, {
+              type: 'loading',
               identifier: walletId,
-              exists: true,
-            })
-            state.activeWalletId = walletId
-          }),
-        )
+              walletExists: false,
+            }),
+          )
 
-        walletStore.setState((prev) =>
-          updateWalletLoadingState(prev, {
-            type: 'ready',
-            identifier: walletId,
-          }),
-        )
+          const exists = await checkWallet(walletId)
+          if (exists) {
+            throw new Error(`Wallet with walletId "${walletId}" already exists`)
+          }
 
-        log(`Created new wallet: ${walletId} and set as active`)
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err)
-        logError('Failed to create wallet:', err)
-        walletStore.setState((prev) =>
-          updateWalletLoadingState(prev, {
-            type: 'error',
-            identifier: walletId,
-            error: new Error(errorMessage),
-          }),
-        )
-        throw err
-      }
-    },
+          await WalletSetupService.createNewWallet(walletId)
+
+          walletStore.setState((prev) =>
+            produce(prev, (state) => {
+              state.walletList.push({
+                identifier: walletId,
+                exists: true,
+              })
+              state.activeWalletId = walletId
+            }),
+          )
+
+          walletStore.setState((prev) =>
+            updateWalletLoadingState(prev, {
+              type: 'ready',
+              identifier: walletId,
+            }),
+          )
+
+          log(`Created new wallet: ${walletId} and set as active`)
+        } catch (err) {
+          const errorMessage = err instanceof Error ? err.message : String(err)
+          logError('Failed to create wallet:', err)
+          walletStore.setState((prev) =>
+            updateWalletLoadingState(prev, {
+              type: 'error',
+              identifier: walletId,
+              error: new Error(errorMessage),
+            }),
+          )
+          throw err
+        }
+      }),
     [checkWallet, walletStore, clearTemporaryWallet],
   )
 

@@ -143,6 +143,53 @@ describe('useWalletManager', () => {
           await result.current.createWallet(walletId);
       })).rejects.toThrow(`Wallet with walletId "${walletId}" already exists`);
     });
+
+    it('should reject creating a new wallet while a different wallet is already active', async () => {
+      const activeWalletId = 'wallet-a';
+      const newWalletId = 'wallet-b';
+      mockWalletSetupService.hasWallet.mockResolvedValue(false);
+
+      mockWalletStoreInstance.setState({
+        activeWalletId,
+        walletLoadingState: { type: 'ready', identifier: activeWalletId },
+      });
+
+      const { result } = renderHook(() => useWalletManager());
+
+      await expect(act(async () => {
+        await result.current.createWallet(newWalletId);
+      })).rejects.toThrow('A wallet is already active. Call lock() before creating a new wallet.');
+
+      expect(mockWalletSetupService.createNewWallet).not.toHaveBeenCalled();
+      expect(result.current.activeWalletId).toBe(activeWalletId);
+    });
+
+    it('should allow creating a new wallet after a manual lock', async () => {
+      const activeWalletId = 'wallet-a';
+      const newWalletId = 'wallet-b';
+      mockWalletSetupService.hasWallet.mockResolvedValue(false);
+
+      mockWalletStoreInstance.setState({
+        activeWalletId,
+        walletLoadingState: { type: 'ready', identifier: activeWalletId },
+      });
+
+      const { result } = renderHook(() => useWalletManager());
+
+      await act(async () => {
+        await result.current.lock();
+      });
+
+      await act(async () => {
+        await result.current.createWallet(newWalletId);
+      });
+
+      expect(mockWalletSetupService.createNewWallet).toHaveBeenCalledWith(newWalletId);
+      expect(result.current.activeWalletId).toBe(newWalletId);
+
+      const state = mockWalletStoreInstance.getState();
+      expect(state.walletLoadingState).toEqual({ type: 'ready', identifier: newWalletId });
+    });
   });
 
   describe('Wallet Operations', () => {
@@ -213,6 +260,136 @@ describe('useWalletManager', () => {
       expect(state.walletLoadingState).toEqual({ type: 'not_loaded' });
     });
 
+    it('should allow a manual unlock for a different wallet after a manual lock', async () => {
+      const previousWalletId = 'wallet-a';
+      const nextWalletId = 'wallet-b';
+
+      mockWalletStoreInstance.setState({
+        activeWalletId: previousWalletId,
+        walletLoadingState: { type: 'ready', identifier: previousWalletId },
+      });
+
+      const { result } = renderHook(() => useWalletManager());
+
+      await act(async () => {
+        result.current.lock();
+      });
+
+      expect(result.current.activeWalletId).toBeNull();
+      expect(mockWalletStoreInstance.getState().walletLoadingState).toEqual({ type: 'not_loaded' });
+
+      await act(async () => {
+        await result.current.unlock(nextWalletId);
+      });
+
+      expect(mockWalletSetupService.initializeWallet).toHaveBeenCalledWith({ walletId: nextWalletId });
+      expect(result.current.activeWalletId).toBe(nextWalletId);
+      expect(mockWalletStoreInstance.getState().walletLoadingState).toEqual({ type: 'ready', identifier: nextWalletId });
+    });
+
+    it('should switch wallets by locking the previous one before unlocking the new one', async () => {
+      const previousWalletId = 'wallet-a';
+      const nextWalletId = 'wallet-b';
+
+      mockWalletStoreInstance.setState({
+        activeWalletId: previousWalletId,
+        walletLoadingState: { type: 'ready', identifier: previousWalletId },
+      });
+
+      const { result } = renderHook(() => useWalletManager());
+
+      await act(async () => {
+        await result.current.switchWallet(nextWalletId);
+      });
+
+      expect(mockWorkletLifecycleService.reset).toHaveBeenCalledTimes(1);
+      expect(mockWalletSetupService.initializeWallet).toHaveBeenCalledWith({ walletId: nextWalletId });
+      expect(result.current.activeWalletId).toBe(nextWalletId);
+
+      const state = mockWalletStoreInstance.getState();
+      expect(state.walletLoadingState).toEqual({ type: 'ready', identifier: nextWalletId });
+    });
+
+    it('should reject a concurrent unlock call while switchWallet is in flight', async () => {
+      let resolveInitialize: (value: void | PromiseLike<void>) => void;
+      const initializePromise = new Promise<void>((resolve) => {
+        resolveInitialize = resolve;
+      });
+      mockWalletSetupService.initializeWallet.mockReturnValue(initializePromise);
+
+      mockWalletStoreInstance.setState({
+        activeWalletId: 'wallet-a',
+        walletLoadingState: { type: 'ready', identifier: 'wallet-a' },
+      });
+
+      const { result } = renderHook(() => useWalletManager());
+
+      let switchWalletPromise: Promise<void>;
+      await act(async () => {
+        switchWalletPromise = result.current.switchWallet('wallet-b');
+      });
+
+      await expect(act(async () => {
+        await result.current.unlock('wallet-c');
+      })).rejects.toThrow(/Another operation is in progress/);
+
+      await act(async () => {
+        resolveInitialize!();
+        await switchWalletPromise!;
+      });
+
+      expect(result.current.activeWalletId).toBe('wallet-b');
+    });
+
+    it('should reject a concurrent lock() call while unlock is in flight', async () => {
+      let resolveInitialize: (value: void | PromiseLike<void>) => void;
+      const initializePromise = new Promise<void>((resolve) => {
+        resolveInitialize = resolve;
+      });
+      mockWalletSetupService.initializeWallet.mockReturnValue(initializePromise);
+
+      const { result } = renderHook(() => useWalletManager());
+
+      let unlockPromise: Promise<void>;
+      await act(async () => {
+        unlockPromise = result.current.unlock('wallet-a');
+      });
+
+      // Without the shared mutex, lock() would run immediately here, clearing
+      // state - only for unlock's later completion to silently overwrite it
+      // back to ready, leaving decrypted wallet-a material in the worklet
+      // while the app believes it locked. It must reject instead.
+      await expect(act(async () => {
+        await result.current.lock();
+      })).rejects.toThrow(/Another operation is in progress/);
+
+      expect(mockWorkletLifecycleService.reset).not.toHaveBeenCalled();
+
+      await act(async () => {
+        resolveInitialize!();
+        await unlockPromise!;
+      });
+
+      expect(result.current.activeWalletId).toBe('wallet-a');
+      expect(mockWalletStoreInstance.getState().walletLoadingState).toEqual({ type: 'ready', identifier: 'wallet-a' });
+    });
+
+    it('should not switch identity when unlock is called directly while a different wallet is ready', async () => {
+      mockWalletStoreInstance.setState({
+        activeWalletId: 'wallet-a',
+        walletLoadingState: { type: 'ready', identifier: 'wallet-a' },
+      });
+
+      const { result } = renderHook(() => useWalletManager());
+
+      await act(async () => {
+        await result.current.unlock('wallet-b');
+      });
+
+      expect(mockWalletSetupService.initializeWallet).not.toHaveBeenCalled();
+      expect(result.current.activeWalletId).toBe('wallet-a');
+    });
+
     it('should delegate unlock to WalletSetupService', async () => {
       const walletId = 'test-wallet-to-unlock';
       mockWalletSetupService.initializeWallet.mockResolvedValue();
@@ -227,16 +404,17 @@ describe('useWalletManager', () => {
       expect(mockWalletSetupService.initializeWallet).toHaveBeenCalledTimes(1);
     });
 
-    it('should delegate deleteWallet to WalletSetupService and update store', async () => {
+    it('should delegate deleteWallet to WalletSetupService and clear active wallet state', async () => {
       const walletIdToDelete = 'wallet-to-delete';
-      const updatedWalletList: WalletInfo[] = [{ identifier: 'other-wallet', exists: true }];
-      
+      const otherWallet: WalletInfo = { identifier: 'other-wallet', exists: true };
+
       mockWalletSetupService.deleteWallet.mockResolvedValue(undefined);
       mockWalletStoreInstance.setState({
-        walletList: [{ identifier: walletIdToDelete, exists: true }, ...updatedWalletList],
+        walletList: [{ identifier: walletIdToDelete, exists: true }, otherWallet],
         activeWalletId: walletIdToDelete,
+        walletLoadingState: { type: 'ready', identifier: walletIdToDelete },
       });
-      
+
       const { result } = renderHook(() => useWalletManager());
 
       await act(async () => {
@@ -245,6 +423,37 @@ describe('useWalletManager', () => {
 
       expect(mockWalletSetupService.deleteWallet).toHaveBeenCalledWith(walletIdToDelete);
       expect(mockWalletSetupService.deleteWallet).toHaveBeenCalledTimes(1);
+
+      const state = mockWalletStoreInstance.getState();
+      expect(state.activeWalletId).toBeNull();
+      expect(state.walletLoadingState).toEqual({ type: 'not_loaded' });
+      expect(state.walletList).toEqual([otherWallet]);
+    });
+
+    it('should not clear activeWalletId when deleting a different, non-active wallet', async () => {
+      const activeWalletId = 'wallet-a';
+      const walletIdToDelete = 'wallet-b';
+
+      mockWalletSetupService.deleteWallet.mockResolvedValue(undefined);
+      mockWalletStoreInstance.setState({
+        walletList: [
+          { identifier: activeWalletId, exists: true },
+          { identifier: walletIdToDelete, exists: true },
+        ],
+        activeWalletId,
+        walletLoadingState: { type: 'ready', identifier: activeWalletId },
+      });
+
+      const { result } = renderHook(() => useWalletManager());
+
+      await act(async () => {
+        await result.current.deleteWallet(walletIdToDelete);
+      });
+
+      const state = mockWalletStoreInstance.getState();
+      expect(state.activeWalletId).toBe(activeWalletId);
+      expect(state.walletLoadingState).toEqual({ type: 'ready', identifier: activeWalletId });
+      expect(state.walletList).toEqual([{ identifier: activeWalletId, exists: true }]);
     });
 
     it('should delegate createTemporaryWallet', async () => {
@@ -260,6 +469,31 @@ describe('useWalletManager', () => {
       });
 
       expect(mockWorkletLifecycleService.initializeWDK).toHaveBeenCalledTimes(1);
+    });
+
+    it('should clear the previous temporary wallet when creating a new one', async () => {
+      mockWorkletLifecycleService.generateEntropyAndEncrypt.mockResolvedValue({
+        encryptionKey: '',
+        encryptedEntropyBuffer: '',
+        encryptedSeedBuffer: ''
+      });
+
+      const { result } = renderHook(() => useWalletManager());
+
+      await act(async () => {
+        await result.current.createTemporaryWallet('temp-1');
+      });
+
+      expect(mockWalletStoreInstance.getState().walletList).toEqual([{ identifier: 'temp-1', exists: true }]);
+
+      await act(async () => {
+        await result.current.createTemporaryWallet('temp-2');
+      });
+
+      const state = mockWalletStoreInstance.getState();
+      expect(state.walletList).toEqual([{ identifier: 'temp-2', exists: true }]);
+      expect(state.tempWalletId).toBe('temp-2');
+      expect(state.activeWalletId).toBe('temp-2');
     });
 
     it('should set walletLoadingState to loading when createWallet is called', async () => {
@@ -303,6 +537,96 @@ describe('useWalletManager', () => {
       expect(state.walletLoadingState).toEqual({ type: 'ready', identifier: walletId });
     });
 
+    it('should throw if a wallet with that id already exists when restoring', async () => {
+      const walletId = 'existing-wallet';
+      const mnemonic = 'test mnemonic';
+      mockWalletSetupService.hasWallet.mockResolvedValue(true);
+
+      const { result } = renderHook(() => useWalletManager());
+
+      await expect(act(async () => {
+        await result.current.restoreWallet(mnemonic, walletId);
+      })).rejects.toThrow(`A wallet with the ID "${walletId}" already exists.`);
+
+      expect(mockWalletSetupService.initializeFromMnemonic).not.toHaveBeenCalled();
+    });
+
+    it('should reject restoring a new wallet while a different wallet is already active', async () => {
+      const activeWalletId = 'wallet-a';
+      const restoredWalletId = 'wallet-b';
+      const mnemonic = 'test mnemonic';
+      mockWalletSetupService.hasWallet.mockResolvedValue(false);
+
+      mockWalletStoreInstance.setState({
+        activeWalletId,
+        walletLoadingState: { type: 'ready', identifier: activeWalletId },
+      });
+
+      const { result } = renderHook(() => useWalletManager());
+
+      await expect(act(async () => {
+        await result.current.restoreWallet(mnemonic, restoredWalletId);
+      })).rejects.toThrow('A wallet is already active. Call lock() before restoring a new wallet.');
+
+      expect(mockWalletSetupService.initializeFromMnemonic).not.toHaveBeenCalled();
+      expect(result.current.activeWalletId).toBe(activeWalletId);
+    });
+
+    it('should allow restoring a new wallet after a manual lock', async () => {
+      const activeWalletId = 'wallet-a';
+      const restoredWalletId = 'wallet-b';
+      const mnemonic = 'test mnemonic';
+      mockWalletSetupService.hasWallet.mockResolvedValue(false);
+
+      mockWalletStoreInstance.setState({
+        activeWalletId,
+        walletLoadingState: { type: 'ready', identifier: activeWalletId },
+      });
+
+      const { result } = renderHook(() => useWalletManager());
+
+      await act(async () => {
+        result.current.lock();
+      });
+
+      await act(async () => {
+        await result.current.restoreWallet(mnemonic, restoredWalletId);
+      });
+
+      expect(mockWalletSetupService.initializeFromMnemonic).toHaveBeenCalledWith(mnemonic, restoredWalletId);
+      expect(result.current.activeWalletId).toBe(restoredWalletId);
+
+      const state = mockWalletStoreInstance.getState();
+      expect(state.walletLoadingState).toEqual({ type: 'ready', identifier: restoredWalletId });
+    });
+
+    it('should reject a concurrent createWallet call while restoreWallet is in flight', async () => {
+      let resolveRestore: (value: { encryptedEntropy: string; encryptedSeed: string; encryptionKey: string } | PromiseLike<{ encryptedEntropy: string; encryptedSeed: string; encryptionKey: string }>) => void;
+      const restorePromise = new Promise<{ encryptedEntropy: string; encryptedSeed: string; encryptionKey: string }>((resolve) => {
+        resolveRestore = resolve;
+      });
+      mockWalletSetupService.initializeFromMnemonic.mockReturnValue(restorePromise);
+      mockWalletSetupService.hasWallet.mockResolvedValue(false);
+
+      const { result } = renderHook(() => useWalletManager());
+
+      let restoreWalletPromise: Promise<string>;
+      await act(async () => {
+        restoreWalletPromise = result.current.restoreWallet('test mnemonic', 'wallet-b');
+      });
+
+      await expect(act(async () => {
+        await result.current.createWallet('wallet-c');
+      })).rejects.toThrow(/Another operation is in progress/);
+
+      await act(async () => {
+        resolveRestore!({ encryptedEntropy: '', encryptedSeed: '', encryptionKey: '' });
+        await restoreWalletPromise!;
+      });
+
+      expect(result.current.activeWalletId).toBe('wallet-b');
+    });
+
     it('should clear balances and loading states via clearCache', () => {
       mockWalletStoreInstance.setState({
         balances: { 'w1': {} },
@@ -337,6 +661,30 @@ describe('useWalletManager', () => {
 
       const state = mockWalletStoreInstance.getState();
       expect(state.tempWalletId).toBeNull();
+      expect(state.walletList).toEqual([]);
+    });
+
+    it('should lock when clearing a temporary wallet that is currently active', () => {
+      const tempId = 'temp-active';
+      mockWalletStoreInstance.setState({
+        tempWalletId: tempId,
+        activeWalletId: tempId,
+        walletLoadingState: { type: 'ready', identifier: tempId },
+        walletList: [{ identifier: tempId, exists: true }],
+      });
+
+      const { result } = renderHook(() => useWalletManager());
+
+      act(() => {
+        result.current.clearTemporaryWallet();
+      });
+
+      expect(mockWorkletLifecycleService.reset).toHaveBeenCalledTimes(1);
+
+      const state = mockWalletStoreInstance.getState();
+      expect(state.tempWalletId).toBeNull();
+      expect(state.activeWalletId).toBeNull();
+      expect(state.walletLoadingState).toEqual({ type: 'not_loaded' });
       expect(state.walletList).toEqual([]);
     });
 

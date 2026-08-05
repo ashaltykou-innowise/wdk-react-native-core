@@ -71,13 +71,33 @@ describe('useWalletOrchestrator', () => {
 
     rerender({ ...initialProps, isWorkletStarted: true, isWorkletInitialized: true, isWdkReinitialized: false });
     act(() => {
-      mockWalletStore.setState({ activeWalletId: 'user1' });
+      mockWalletStore.setState({
+        activeWalletId: 'user1',
+        walletLoadingState: { type: 'ready', identifier: 'user1' } as WalletLoadingState,
+      });
     });
     await waitFor(() => expect(result.current.state).toEqual({ status: 'READY', walletId: 'user1' }));
 
     const error = new Error('test error');
     rerender({ ...initialProps, workletError: 'test error' });
     await waitFor(() => expect(result.current.state).toEqual({ status: 'ERROR', error }));
+  });
+
+  it('should report LOCKED, not READY, when the ready wallet does not match activeWalletId', async () => {
+    const { result } = renderHook((props) => useWalletOrchestrator(props), {
+      initialProps: { ...initialProps, isWorkletStarted: true, isWorkletInitialized: true },
+    });
+
+    act(() => {
+      mockWalletStore.setState({
+        activeWalletId: 'user2',
+        walletLoadingState: { type: 'ready', identifier: 'user1' } as WalletLoadingState,
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.state).toEqual({ status: 'LOCKED', walletId: 'user2' });
+    });
   });
 
   it('should return ERROR state when walletLoadingState reports an error', async () => {

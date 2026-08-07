@@ -12,37 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import {
   getWalletStore,
-  WalletLoadingState,
   type WalletStore,
 } from '../../store/walletStore'
 import type { WdkAppState } from '../../provider/WdkAppProvider'
-
-// Custom deep equality for walletLoadingState comparison
-const deepEqualityFn = (a: WalletLoadingState, b: WalletLoadingState): boolean => {
-  if (a === b) return true
-
-  if (a.type !== b.type) return false
-
-  switch (a.type) {
-    case 'not_loaded':
-      return true
-    case 'checking':
-      return a.identifier === (b as typeof a).identifier
-    case 'loading':
-      return a.identifier === (b as typeof a).identifier &&
-             a.walletExists === (b as typeof a).walletExists
-    case 'ready':
-      return a.identifier === (b as typeof a).identifier
-    case 'error':
-      return a.identifier === (b as typeof a).identifier &&
-             a.error?.message === (b as typeof a).error?.message
-    default:
-      return false
-  }
-}
 
 export interface UseWalletOrchestratorProps {
   isWorkletStarted: boolean
@@ -59,29 +35,13 @@ export function useWalletOrchestrator({
 }: UseWalletOrchestratorProps) {
   const walletStore = getWalletStore()
 
-  const activeWalletId = walletStore(
-    (state: WalletStore) => state.activeWalletId,
+  const { activeWalletId, walletLoadingState, wallets } = walletStore(
+    useShallow((state: WalletStore) => ({
+      activeWalletId: state.activeWalletId,
+      walletLoadingState: state.walletLoadingState,
+      wallets: state.walletList,
+    })),
   )
-
-  // For walletLoadingState, use a ref to manually check equality and prevent unnecessary re-renders
-  const walletLoadingStateRef = useRef(
-    walletStore.getState().walletLoadingState,
-  )
-  const [walletLoadingState, setWalletLoadingState] = useState(
-    walletStore.getState().walletLoadingState,
-  )
-
-  useEffect(() => {
-    const unsubscribe = walletStore.subscribe((state: WalletStore) => {
-      const newState = state.walletLoadingState
-      // Only update if content actually changed (deep equality check)
-      if (!deepEqualityFn(walletLoadingStateRef.current, newState)) {
-        walletLoadingStateRef.current = newState
-        setWalletLoadingState(newState)
-      }
-    })
-    return unsubscribe
-  }, [walletStore])
 
   const state = useMemo((): WdkAppState => {
     const walletError =
@@ -105,12 +65,14 @@ export function useWalletOrchestrator({
       return { status: 'REINITIALIZING'}
     }
 
-    if (isWorkletStarted && !activeWalletId) {
-      return { status: 'NO_WALLET' }
-    }
-
     if (isWorkletStarted && activeWalletId) {
       return { status: 'LOCKED', walletId: activeWalletId }
+    }
+
+    if (isWorkletStarted && !activeWalletId) {
+      return wallets.length > 0
+        ? { status: 'LOCKED' }
+        : { status: 'NO_WALLET' }
     }
 
     return { status: 'INITIALIZING' }
@@ -120,7 +82,8 @@ export function useWalletOrchestrator({
     isWorkletInitialized,
     isWorkletStarted,
     activeWalletId,
-    isWorkletReinitialized
+    isWorkletReinitialized,
+    wallets,
   ])
 
   return {

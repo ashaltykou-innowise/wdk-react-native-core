@@ -40,10 +40,19 @@ describe('useWalletOrchestrator', () => {
     jest.clearAllMocks();
 
     mockWalletStore = create<WalletStore>(() => ({
+        addresses: {},
+        walletLoading: {},
+        balances: {},
+        balanceLoading: {},
+        lastBalanceUpdate: {},
+        accountList: {},
+        walletList: [],
         activeWalletId: null,
         walletLoadingState: { type: 'not_loaded' } as WalletLoadingState,
-        addresses: {},
-    } as WalletStore));
+        isOperationInProgress: false,
+        currentOperation: null,
+        tempWalletId: null,
+    }));
 
     (getWalletStore as jest.Mock).mockReturnValue(mockWalletStore);
   });
@@ -97,6 +106,22 @@ describe('useWalletOrchestrator', () => {
 
     await waitFor(() => {
       expect(result.current.state).toEqual({ status: 'LOCKED', walletId: 'user2' });
+    });
+  });
+
+  it('should report LOCKED with no walletId when wallets are known but none is active', async () => {
+    mockWalletStore.setState({
+      walletList: [{ identifier: 'user1', exists: true }],
+    });
+
+    const { result } = renderHook((props) => useWalletOrchestrator(props), { initialProps });
+
+    act(() => {
+      mockWalletStore.setState({ activeWalletId: null });
+    });
+
+    await waitFor(() => {
+      expect(result.current.state).toEqual({ status: 'LOCKED' });
     });
   });
 

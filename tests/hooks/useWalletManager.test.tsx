@@ -713,6 +713,15 @@ describe('useWalletManager', () => {
       const { result } = renderHook(() => useWalletManager());
       expect(result.current.status).toBe('LOCKED');
     });
+
+    it('should return LOCKED, not NO_WALLET, when wallets are known but none is active', () => {
+      mockWalletStoreInstance.setState({
+        activeWalletId: null,
+        walletList: [{ identifier: 'some-wallet', exists: true }],
+      });
+      const { result } = renderHook(() => useWalletManager());
+      expect(result.current.status).toBe('LOCKED');
+    });
   });
 
   describe('Error Handling', () => {

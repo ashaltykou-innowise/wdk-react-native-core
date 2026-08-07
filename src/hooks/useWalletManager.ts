@@ -155,7 +155,7 @@ export function useWalletManager(): UseWalletManagerResult {
       }
 
       if (!activeWalletId) {
-        return 'NO_WALLET'
+        return wallets.length > 0 ? 'LOCKED' : 'NO_WALLET'
       }
 
       if (isWdkInitialized) {
@@ -163,7 +163,7 @@ export function useWalletManager(): UseWalletManagerResult {
       }
 
       return 'LOCKED'
-    }, [activeWalletId, walletLoadingState.type, isWdkInitialized])
+    }, [activeWalletId, walletLoadingState.type, isWdkInitialized, wallets])
 
   /**
    * Signs out of the active wallet: clears activeWalletId, resets the worklet, and

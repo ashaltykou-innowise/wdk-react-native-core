@@ -374,7 +374,23 @@ describe('useWalletManager', () => {
       expect(mockWalletStoreInstance.getState().walletLoadingState).toEqual({ type: 'ready', identifier: 'wallet-a' });
     });
 
-    it('should not switch identity when unlock is called directly while a different wallet is ready', async () => {
+    it('should reject unlocking a different wallet while one is already ready', async () => {
+      mockWalletStoreInstance.setState({
+        activeWalletId: 'wallet-a',
+        walletLoadingState: { type: 'ready', identifier: 'wallet-a' },
+      });
+
+      const { result } = renderHook(() => useWalletManager());
+
+      await expect(act(async () => {
+        await result.current.unlock('wallet-b');
+      })).rejects.toThrow('A wallet is already active. Call lock() before unlocking a different wallet.');
+
+      expect(mockWalletSetupService.initializeWallet).not.toHaveBeenCalled();
+      expect(result.current.activeWalletId).toBe('wallet-a');
+    });
+
+    it('should no-op when unlocking the same wallet that is already ready', async () => {
       mockWalletStoreInstance.setState({
         activeWalletId: 'wallet-a',
         walletLoadingState: { type: 'ready', identifier: 'wallet-a' },
@@ -383,7 +399,7 @@ describe('useWalletManager', () => {
       const { result } = renderHook(() => useWalletManager());
 
       await act(async () => {
-        await result.current.unlock('wallet-b');
+        await result.current.unlock('wallet-a');
       });
 
       expect(mockWalletSetupService.initializeWallet).not.toHaveBeenCalled();

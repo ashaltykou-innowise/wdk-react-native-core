@@ -40,10 +40,18 @@ export interface UseWalletManagerResult {
   /** List of backing Wallets (Seeds) managed by the device. */
   wallets: WalletInfo[]
 
-  /** Create a new Wallet (Seed). */
+  /**
+   * Create a new Wallet (Seed).
+   * The app is responsible for any biometric or other security check before
+   * calling this - the library does not enforce one.
+   */
   createWallet: (walletId: string) => Promise<void>
 
-  /** Restore a Wallet from Seed Phrase. Returns the new walletId. */
+  /**
+   * Restore a Wallet from Seed Phrase. Returns the new walletId.
+   * The app is responsible for any biometric or other security check before
+   * calling this - the library does not enforce one.
+   */
   restoreWallet: (mnemonic: string, walletId: string) => Promise<string>
 
   /** Generate a mnemonic phrase. */
@@ -61,8 +69,11 @@ export interface UseWalletManagerResult {
   lock: () => Promise<void>
 
   /**
-   * Unlocks a wallet.
-   * This typically triggers a biometric prompt to decrypt and load the wallet.
+   * Unlocks a wallet by decrypting and loading it.
+   * The app is responsible for any biometric or other security check before
+   * calling this - the library does not enforce one.
+   * Resolves without doing anything if this exact wallet is already ready.
+   * Throws if a *different* wallet is already active - call lock() first.
    * @param walletId - The wallet to unlock. Callers own identity - there is no implicit fallback.
    */
   unlock: (walletId: string) => Promise<void>
@@ -71,7 +82,8 @@ export interface UseWalletManagerResult {
    * Switches to a different wallet.
    * Equivalent to calling lock() followed by unlock(walletId), performed as a single
    * atomic operation so the previous wallet's data is always cleared before the new
-   * one is loaded.
+   * one is loaded. The app is responsible for any biometric or other security check
+   * before calling this - the library does not enforce one.
    */
   switchWallet: (walletId: string) => Promise<void>
 
@@ -92,7 +104,11 @@ export interface UseWalletManagerResult {
    */
   clearTemporaryWallet: () => void
 
-  /** Get mnemonic phrase from wallet (requires biometric auth). */
+  /**
+   * Get mnemonic phrase from wallet.
+   * The app is responsible for any biometric or other security check before
+   * calling this - the library does not enforce one.
+   */
   getMnemonic: (walletId: string) => Promise<string | null>
 
   /** Get encryption key from cache or secure storage. */
@@ -210,11 +226,18 @@ export function useWalletManager(): UseWalletManagerResult {
 
   const performUnlock = useCallback(
     async (walletId: string) => {
-      if (walletStore.getState().walletLoadingState.type === 'ready') {
-        log('[useWalletManager] Skipping unlock: a wallet is already ready.', {
-          requestedWalletId: walletId,
-        })
-        return
+      const currentLoadingState = walletStore.getState().walletLoadingState
+      if (currentLoadingState.type === 'ready') {
+        if (currentLoadingState.identifier === walletId) {
+          log('[useWalletManager] Skipping unlock: this wallet is already ready.', {
+            walletId,
+          })
+          return
+        }
+
+        throw new Error(
+          'A wallet is already active. Call lock() before unlocking a different wallet.',
+        )
       }
 
       await WorkletLifecycleService.ensureWorkletStarted()
@@ -414,8 +437,9 @@ export function useWalletManager(): UseWalletManagerResult {
   )
 
   /**
-   * Get mnemonic phrase from wallet
-   * Requires biometric authentication if credentials are not cached
+   * Get mnemonic phrase from wallet.
+   * The app is responsible for any biometric or other security check before
+   * calling this - the library does not enforce one.
    */
   const getMnemonic = useCallback(
     async (walletId: string): Promise<string | null> => {
@@ -430,8 +454,9 @@ export function useWalletManager(): UseWalletManagerResult {
   )
 
   /**
-   * Get encryption key from cache or secure storage
-   * Requires biometric authentication if not cached
+   * Get encryption key from cache or secure storage.
+   * The app is responsible for any biometric or other security check before
+   * calling this - the library does not enforce one.
    *
    * @param walletId - Optional walletId override (defaults to hook's walletId)
    * @returns Promise resolving to encryption key or null if not found

@@ -226,9 +226,10 @@ export function useWalletManager(): UseWalletManagerResult {
 
   const performUnlock = useCallback(
     async (walletId: string) => {
-      const currentLoadingState = walletStore.getState().walletLoadingState
+      const { walletLoadingState: currentLoadingState, activeWalletId } =
+        walletStore.getState()
       if (currentLoadingState.type === 'ready') {
-        if (currentLoadingState.identifier === walletId) {
+        if (currentLoadingState.identifier === walletId && activeWalletId === walletId) {
           log('[useWalletManager] Skipping unlock: this wallet is already ready.', {
             walletId,
           })
@@ -584,10 +585,17 @@ export function useWalletManager(): UseWalletManagerResult {
           throw new Error('A valid walletId is required for createTemporaryWallet.')
         }
 
-        try {
-          const tempWalletId = walletId
-          clearTemporaryWallet()
+        const tempWalletId = walletId
+        clearTemporaryWallet()
 
+        const { walletLoadingState, activeWalletId } = walletStore.getState()
+        if (walletLoadingState.type === 'ready' && activeWalletId !== tempWalletId) {
+          throw new Error(
+            'A wallet is already active. Call lock() before creating a temporary wallet.',
+          )
+        }
+
+        try {
           await WorkletLifecycleService.ensureWorkletStarted()
 
           let encryptionKey: string
@@ -623,10 +631,25 @@ export function useWalletManager(): UseWalletManagerResult {
             }),
           )
 
+          walletStore.setState((prev) =>
+            updateWalletLoadingState(prev, {
+              type: 'loading',
+              identifier: tempWalletId,
+              walletExists: true,
+            }),
+          )
+
           await WorkletLifecycleService.initializeWDK({
             encryptionKey,
             encryptedSeed,
           })
+
+          walletStore.setState((prev) =>
+            updateWalletLoadingState(prev, {
+              type: 'ready',
+              identifier: tempWalletId,
+            }),
+          )
 
           log(
             '[useWalletManager] Temporary wallet created and set as active',
@@ -636,6 +659,14 @@ export function useWalletManager(): UseWalletManagerResult {
           logError(
             '[useWalletManager] Failed to create temporary wallet:',
             err,
+          )
+          const errorMessage = err instanceof Error ? err.message : String(err)
+          walletStore.setState((prev) =>
+            updateWalletLoadingState(prev, {
+              type: 'error',
+              identifier: walletId,
+              error: new Error(errorMessage),
+            }),
           )
           throw err
         }

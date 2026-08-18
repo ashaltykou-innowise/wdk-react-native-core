@@ -390,6 +390,23 @@ describe('useWalletManager', () => {
       expect(result.current.activeWalletId).toBe('wallet-a');
     });
 
+    it('should reject rather than silently skip when the loading state and activeWalletId have diverged', async () => {
+      // If activeWalletId and walletLoadingState ever fall out of lockstep, unlock('wallet-a')
+      // must not treat the stale 'wallet-a' loading state as "already unlocked".
+      mockWalletStoreInstance.setState({
+        activeWalletId: 'wallet-b',
+        walletLoadingState: { type: 'ready', identifier: 'wallet-a' },
+      });
+
+      const { result } = renderHook(() => useWalletManager());
+
+      await expect(act(async () => {
+        await result.current.unlock('wallet-a');
+      })).rejects.toThrow('A wallet is already active. Call lock() before unlocking a different wallet.');
+
+      expect(mockWalletSetupService.initializeWallet).not.toHaveBeenCalled();
+    });
+
     it('should no-op when unlocking the same wallet that is already ready', async () => {
       mockWalletStoreInstance.setState({
         activeWalletId: 'wallet-a',
@@ -510,6 +527,42 @@ describe('useWalletManager', () => {
       expect(state.walletList).toEqual([{ identifier: 'temp-2', exists: true }]);
       expect(state.tempWalletId).toBe('temp-2');
       expect(state.activeWalletId).toBe('temp-2');
+    });
+
+    it('should mark the temporary wallet as ready so a stale unlock cannot skip past it', async () => {
+      mockWorkletLifecycleService.generateEntropyAndEncrypt.mockResolvedValue({
+        encryptionKey: '',
+        encryptedEntropyBuffer: '',
+        encryptedSeedBuffer: ''
+      })
+
+      const { result } = renderHook(() => useWalletManager());
+
+      await act(async () => {
+        await result.current.createTemporaryWallet('temp-preview');
+      });
+
+      const state = mockWalletStoreInstance.getState();
+      expect(state.walletLoadingState).toEqual({ type: 'ready', identifier: 'temp-preview' });
+      expect(state.activeWalletId).toBe('temp-preview');
+    });
+
+    it('should reject creating a temporary wallet while a different real wallet is already active', async () => {
+      mockWalletStoreInstance.setState({
+        activeWalletId: 'wallet-a',
+        walletLoadingState: { type: 'ready', identifier: 'wallet-a' },
+      });
+
+      const { result } = renderHook(() => useWalletManager());
+
+      await expect(act(async () => {
+        await result.current.createTemporaryWallet('temp-preview');
+      })).rejects.toThrow('A wallet is already active. Call lock() before creating a temporary wallet.');
+
+      expect(mockWorkletLifecycleService.initializeWDK).not.toHaveBeenCalled();
+      const state = mockWalletStoreInstance.getState();
+      expect(state.activeWalletId).toBe('wallet-a');
+      expect(state.walletLoadingState).toEqual({ type: 'ready', identifier: 'wallet-a' });
     });
 
     it('should set walletLoadingState to loading when createWallet is called', async () => {
